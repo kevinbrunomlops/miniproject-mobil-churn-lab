@@ -1,0 +1,122 @@
+
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: "Commit SHA for an approved Docker image"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+concurrency:
+  group: churn-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to mlops-ht26
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Validate SHA
+        env:
+          IMAGE_SHA: ${{ inputs.image_sha }}
+        run: |
+          if [[ ! "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: A full 40-character commit SHA is required."
+            exit 1
+          fi
+
+      - name: Verify approved CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          RUNS=$(gh api \
+            "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$IMAGE_SHA" \
+            -f event="push" \
+            -f status="success" \
+            --jq '.workflow_runs[] | select(.head_branch == "main") | .id')
+
+          if [[ -z "$RUNS" ]]; then
+            echo "ERROR: No successful main-branch CI run for $IMAGE_SHA."
+            exit 1
+          fi
+
+          echo "PASS: Approved CI run found."
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure Kubernetes authentication
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG_PRODUCTION }}
+        run: |
+          if [[ -z "$KUBECONFIG_CONTENT" ]]; then
+            echo "ERROR: Missing KUBECONFIG_PRODUCTION secret."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBECONFIG_CONTENT" > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Verify Kubernetes access
+        run: |
+          kubectl --context mlops-ht26 \
+            -n kevin-bruno auth can-i patch deployments
+
+      - name: Verify image exists
+        env:
+          IMAGE_SHA: ${{ inputs.image_sha }}
+        run: |
+          IMAGE="ghcr.io/kevinbrunomlops/miniproject-mobil-churn-lab:$IMAGE_SHA"
+
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Deploy approved image
+        env:
+          IMAGE_SHA: ${{ inputs.image_sha }}
+        run: |
+          IMAGE="ghcr.io/kevinbrunomlops/miniproject-mobil-churn-lab:$IMAGE_SHA"
+
+          kubectl --context mlops-ht26 \
+            -n kevin-bruno \
+            set image deployment/churn-api churn-api="$IMAGE"
+
+      - name: Verify rollout and rollback on failure
+        run: |
+          if ! kubectl --context mlops-ht26 \
+            -n kevin-bruno \
+            rollout status deployment/churn-api --timeout=180s; then
+
+            echo "ERROR: Deployment failed. Starting rollback."
+
+            kubectl --context mlops-ht26 \
+              -n kevin-bruno \
+              rollout undo deployment/churn-api
+
+            kubectl --context mlops-ht26 \
+              -n kevin-bruno \
+              rollout status deployment/churn-api --timeout=180s
+
+            exit 1
+          fi
+
+          echo "PASS: Production deployment completed."
+
+      - name: Show deployed image
+        run: |
+          kubectl --context mlops-ht26 \
+            -n kevin-bruno \
+            get deployment churn-api \
+            -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
