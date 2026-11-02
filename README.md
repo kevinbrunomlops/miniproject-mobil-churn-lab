@@ -1,160 +1,152 @@
-# Churnmodellen – Saldes Mobil AB
+# Mobil Churn – MLOps Mini Project
 
-> *Saldes Mobil AB är ett påhittat företag och all kunddata är fiktiv. Repot är en övning i
-> kursen Kontinuerlig integration och leverans (MLOps25, Nackademin).*
+## 1. Projektöversikt
 
-## Välkommen till teamet
+Detta miniprojekt bygger vidare på [mobil-churn-laboration](https://github.com/kevinbrunomlops/mobil-churn-laboration), där vi utvecklade en CI-pipeline för en maskininlärningsmodell som förutsäger kundbortfall (churn).
 
-Hej och välkommen!
+Syftet med miniprojektet är att vidareutveckla lösningen till en driftsatt ML-tjänst med hjälp av **Docker, GitHub Actions, FastAPI och Kubernetes**.
 
-Kul att du börjar hos oss som MLOps-ingenjör. Här är bakgrunden till ditt första uppdrag.
+Projektet omfattar automatiserad kvalitetssäkring, modellträning, versionshantering, containerisering samt utrullning och rollback i både lokal och molnbaserad Kubernetes-miljö.
 
-Vi tappar kunder. Analysteamet har byggt en modell som förutsäger vilka kunder som riskerar
-att säga upp sitt abonnemang. Varje måndag får kundtjänst en **ringlista** med de kunder som
-har högst risk, och ringer dem med ett erbjudande.
+## 2. CI/CD – Från kodändring till driftsatt modell
 
-I dag sköts det mesta för hand. Modellen tränas på en dator här på kontoret, och modellfilen
-ligger incheckad i `models/`. Ringlistan gör någon varje måndag morgon med kommandona nedan.
-Vi har ett CI-workflow, men det kör allt i ett enda jobb, installerar om alla paket vid
-varje push och testar på en annan Python-version än servern som gör ringlistan (3.11).
-Sedan förra veckan är det dessutom rött, och ingen har hunnit ta reda på varför.
+Pipelinen är implementerad med GitHub Actions och består av följande steg:
 
-För två veckor sedan gick det riktigt fel. Kundtjänst fick en ringlista från en modell som
-var sämre än den förra. Ingen märkte det förrän säljarna klagade, och ingen kunde säga vilken
-commit eller vilken data modellen kom från.
+1. **Kodändring:** En push eller pull request kan starta CI-pipelinen beroende på vilka filer som ändrats.
+2. **Tester:** Pytest kontrollerar funktionalitet och modellkrav i Python 3.11, 3.12 och 3.13.
+3. **Datavalidering:** Pandera kontrollerar att träningsdata följer det förväntade schemat.
+4. **Modellträning:** En scikit-learn-modell tränas och sparas som en `.joblib`-fil.
+5. **Kvalitetsgrind:** Modellen måste uppnå ROC AUC ≥ 0.70.
+6. **Docker:** Den godkända modellen paketeras tillsammans med FastAPI i en container-image.
+7. **GHCR:** Imagen publiceras i GitHub Container Registry med commitens SHA som versionstagg.
+8. **Utrullning:** En separat GitHub Actions-workflow kan manuellt startas för att distribuera en godkänd version till Kubernetes i molnet.
 
-**Ditt uppdrag:** se till att bara en testad modell med känd härkomst kan bli en ringlista.
-Jag har skrivit ärenden åt dig, se *Kom igång* nedan.
+Produktionsutrullningen använder `workflow_dispatch` och kräver manuellt godkännande. Workflowet kontrollerar att versionen har passerat CI, uppdaterar Kubernetes Deployment och verifierar att utrullningen lyckas.
 
-Två regler:
+Detta ger spårbarhet från **Git-commit → tränad modell → Docker-image → Kubernetes**.
 
-- Ändra inte modellen, datan eller feature-koden i `src/churn/data.py`. Den sköter
-  analysteamet. Ditt arbete är workflows, tester och inställningar i repot.
-- Ingen pushar direkt till main när vi väl har skydd på plats. Allt går via pull requests.
+## 3. Docker och FastAPI
 
-Lycka till, och fråga hellre en gång för mycket.
+Modellen exponeras som en REST API-tjänst med FastAPI.
 
-*Teamleaden*
+API:et innehåller bland annat:
 
-## Kom igång
+- `GET /health` – kontrollerar tjänstens hälsa och visar aktiv modellversion.
+- `GET /model-info` – visar information om modellen.
+- `POST /predict` – tar emot kunddata och returnerar en churn-prediktion.
 
-1. Skapa ditt eget repo från mallen: **Use this template → Create a new repository**.
-   Välj ditt eget konto och **Public**.
-2. Klona det och skapa ärendena som issues (kräver `gh auth login`):
+Projektets `Dockerfile` bygger en image som innehåller applikationen, dess beroenden och den tränade modellartefakten. Containern startar FastAPI via Uvicorn på port 8000.
 
-   ```bash
-   git clone https://github.com/<ditt-användarnamn>/<ditt-repo>.git
-   cd <ditt-repo>
-   bash arenden/skapa.sh
-   ```
+Docker används för att paketera tjänsten med dess beroenden så att samma image kan köras i olika miljöer.
 
-3. Öppna fliken **Actions** och titta på den första körningen. Börja med ärende F1.
+Imagen byggs för både `linux/amd64` och `linux/arm64`, vilket gör den kompatibel med GitHub Actions-miljön och det ARM64-baserade molnklustret.
 
-## Så kör man det lokalt med uv
+Varje publicerad image taggas med en fullständig commit-SHA i stället för `latest`. Därmed går det att identifiera exakt vilken kodversion som ligger bakom en driftsatt modell.
 
-### Installera dependencies
-```
-uv sync --frozen --extra dev 
-```
+## 4. Kubernetes – Deployment och Service
 
-### Kör den kompletta ML pipelinen
-```bash
-# Tests
-uv run --frozen --no-sync python -m pytest -v 
-# Datavalidering
-uv run --frozen --no-sync python -m kontroller.validate_data data/kundbas.csv
-# Tränar, skriver outputs/modell.joblib och outputs/matvarden.json
-uv run --frozen --no-sync python -m churn.model
-# Kvalitetsgrind: felkod om ROC AUC är under tröskeln
-uv run --frozen --no-sync python -m churn.evaluate
-# Skriver outputs/ringlista.csv
-uv run --frozen --no-sync python -m churn.score
-```
+Kubernetes används för att köra och hantera den containeriserade ML-tjänsten.
 
+Konfigurationen finns i katalogen `k8s/`:
 
-## Vad som finns här
+- **`deployment.yaml`** – definierar containern, antal repliker, resursgränser och hälsokontroller.
+- **`service.yaml`** – skapar en intern ClusterIP Service som gör API:et åtkomligt inom klustret.
 
-| Sökväg | Innehåll |
-| --- | --- |
-| `data/kundbas.csv` | 2 000 kunder: ålder, region, abonnemang, kostnad, dataförbrukning, supportärenden och om kunden avslutat (`avslutat`) |
-| `src/churn/data.py` | Inläsning och features |
-| `src/churn/model.py` | Träning. Skriver modell och mätvärden till `outputs/` |
-| `src/churn/evaluate.py` | Kvalitetsgrind på mätvärdena |
-| `src/churn/score.py` | Ringlistan |
-| `tests/` | Tester på tre nivåer: kod, data och modell |
-| `outputs/modell.joblib` |  Modellen som skapas när träningen körs. Sparas inte i Git |
-| `arenden/` | Ärendena, och `skapa.sh` som gör dem till issues |
-| `.github/workflows/ci.yml` | Vårt CI |
+Deployment använder CPU- och minnesbegränsningar samt följande probes mot `/health`:
 
-## Modellen och kvalitetskontrollen
+- **Startup probe:** Kontrollerar att applikationen har startat.
+- **Readiness probe:** Avgör när podden är redo att ta emot trafik.
+- **Liveness probe:** Kontrollerar om containern behöver startas om.
 
-Vi använder ROC AUC för att kontrollera modellen. Gränsen är 0,70:
-om resultatet är lägre stoppas körningen. Vi kontrollerar också att
-resultatet och den valda gränsen är giltiga tal mellan 0 och 1.
+Dessa kontroller hjälper Kubernetes att hantera tjänstens livscykel och genomföra säkrare uppdateringar.
 
-Modellen jämförs med en enkel DummyClassifier. Båda använder samma
-uppdelning med 25 % testdata, så att jämförelsen görs på samma kunder.
+## 5. Lokal miljö och molnmiljö
 
-Den gamla modellen i `models/modell.joblib` är borttagen från Git.
-När du kör träningskommandot ovan får du en ny modell i
-`outputs/modell.joblib`. Resultaten sparas i `outputs/matvarden.json`,
-tillsammans med information om vilken kod och data som användes.
+Projektet har distribuerats i två Kubernetes-miljöer.
 
-Kör sedan utvärderingskommandot ovan för att kontrollera om modellen
-blir godkänd. Modellen och resultaten i `outputs/` ignoreras av Git
-via `.gitignore` och följer därför inte med i vanliga commits.
+| Miljö | Teknik | Syfte |
+|---|---|---|
+| Lokal | kind + Docker Desktop | Testa Kubernetes-manifest, API, rolling update och rollback |
+| Moln | `mlops-ht26`, namespace `kevin-bruno` | Verifiera att den publicerade Docker-imagen fungerar i en produktionsliknande miljö |
 
-## MLflow
+**kind** (Kubernetes in Docker) används för att skapa ett lokalt Kubernetes-kluster. Det gör det möjligt att testa Deployment, Service och utrullningsstrategier utan att behöva använda molnresurser.
 
-MLflow sparar parametrar, mätvärden, commit och datasetets hash
-när modellen tränas. Varje körning sparar också en kopia av
-`modell.joblib` och `matvarden.json`.
+**Molnklustret** används för att verifiera den publicerade GHCR-imagen i en separat Kubernetes-miljö med resursbegränsningar och åtkomstkontroll.
 
-I CI sparas resultaten i ett artifact som heter `mlflow-<commit SHA>`.
+I båda miljöerna har tjänstens funktionalitet och Kubernetes-utrullning testats.
 
-### Kör lokalt
+## 6. Val av utrullningsstrategi – RollingUpdate
 
-Kör från projektets huvudmapp:
+Projektet använder Kubernetes standardstrategi **RollingUpdate**.
 
-```bash
-uv sync --locked --extra dev
-uv run --locked python -m churn.model
-uv run --locked python -m churn.evaluate
-uv run --locked mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5001
-```
+Vid en uppdatering startar Kubernetes en pod med den nya versionen och väntar tills den är redo innan den gamla podden tas bort.
 
-Öppna http://127.0.0.1:5001 och välj `mobil-churn` under
-Model training. Stoppa gränssnittet med Ctrl+C.
+Deployment är konfigurerad med:
 
-Lokala resultat sparas i `mlflow.db` och `mlruns/`.
-De sparas inte i Git.
+- `maxSurge: 1` – tillåter en extra pod under uppdateringen.
+- `maxUnavailable: 0` – behåller önskat antal tillgängliga repliker under utrullningen.
+- Readiness probe – kontrollerar att den nya podden är redo.
 
-### Öppna resultat från CI
+### Varför RollingUpdate framför Blue/Green eller Canary?
 
-Ladda ner artifactet `mlflow-…` från GitHub Actions.
-Packa upp ZIP-filen och kopiera `mlflow-tracking.tar.gz` till `outputs/`.
+**RollingUpdate** valdes eftersom projektet består av en mindre ML-tjänst i en resursbegränsad Kubernetes-miljö. Strategin har inbyggt stöd i Kubernetes, kräver relativt lite konfiguration och möjliggör rollback.
 
-Använd en ny, tom mapp och kör:
+**Blue/Green** hade krävt två parallella miljöer, vilket ökar resursbehovet men ger möjlighet till snabb växling mellan versionerna.
+
+**Canary** hade gjort det möjligt att gradvis styra en mindre andel trafik till en ny modellversion, men hade krävt mer avancerad trafikstyrning och övervakning.
+
+RollingUpdate bedömdes därför ge den bästa balansen mellan enkelhet, resurser och tillgänglighet för projektets omfattning.
+
+## 7. Modelluppdatering och rollback
+
+För att demonstrera versionshantering och rollback användes två modellartefakter som publicerats i GHCR efter godkända CI-körningar.
+
+| | Modell A | Modell B |
+|---|---|---|
+| Commit-SHA | `a37394cb…` | `165c92d1…` |
+| ROC AUC | 0.7887 | 0.7887 |
+| Accuracy | 0.824 | 0.824 |
+| CI-status | Godkänd | Godkänd |
+
+Modellfilerna hade olika SHA-256-hashvärden, vilket bekräftar att de är olika artefakter på byte-nivå. De har däremot samma rapporterade mätvärden och träningsdata.
+
+### Genomförd demonstration
+
+1. **Modell A** kördes i molnklustret och verifierades.
+2. **Modell B** distribuerades med `kubectl set image`.
+3. Kubernetes genomförde en lyckad rolling update.
+4. API:ets `/health` bekräftade att Modell B kördes.
+5. `kubectl rollout undo` användes för att återställa Modell A.
+6. Rollback lyckades och `/health` bekräftade att Modell A återigen kördes.
+
+Exempel på kommandon:
 
 ```bash
-mkdir -p outputs/mlflow-ci
-tar -xzf outputs/mlflow-tracking.tar.gz -C outputs/mlflow-ci
-uv run --locked python scripts/restore_mlflow.py outputs/mlflow-ci
-uv run --locked mlflow ui --backend-store-uri sqlite:///outputs/mlflow-ci/mlflow.db --port 5001
+# Kontrollera utrullning
+kubectl --context mlops-ht26 -n kevin-bruno \
+  rollout status deployment/churn-api
+
+# Återställ tidigare version
+kubectl --context mlops-ht26 -n kevin-bruno \
+  rollout undo deployment/churn-api
+
+# Kontrollera revisionshistorik
+kubectl --context mlops-ht26 -n kevin-bruno \
+  rollout history deployment/churn-api
 ```
 
-Stoppa ett eventuellt öppet MLflow-gränssnitt innan du startar ett nytt
-på samma port.
+**Resultat:** Demonstrationen visade att en ny, CI-godkänd modellartefakt kunde rullas ut och att den tidigare versionen kunde återställas. Modellversionerna verifierades genom API:ets `/health`-endpoint.
 
-Öppna http://127.0.0.1:5001 och välj `mobil-churn`.
-Nu kan du se resultaten från CI utan att träna modellen igen.
+## 8. Resultat och vidareutveckling
 
-Skriptet uppdaterar sökvägarna i den nedladdade databasen och sparar
-en backup. Modellen ändras inte. När gränssnittet är stängt kan
-den extraherade mappen tas bort.
+Miniprojektet demonstrerar ett MLOps-flöde från kodändring och modellträning till en containeriserad ML-tjänst i Kubernetes.
 
-### Varning vid tester
+De viktigaste resultaten är:
 
-Testerna kan visa en varning om `noload`, som används internt av
-MLflow med SQLAlchemy och är markerat för framtida borttagning.
-Vi har lämnat varningen synlig. Alla 28 tester passerar.
+- Automatiserade tester, datavalidering och kvalitetsgrind.
+- Spårbara modellartefakter och Docker-images kopplade till Git-commits.
+- Fungerande API i både lokalt och molnbaserat Kubernetes-kluster.
+- Manuell, godkännandestyrd produktionsutrullning via GitHub Actions.
+- Verifierad rolling update och rollback mellan två modellartefakter.
+
+Möjliga förbättringar är automatiserad staging, utökad övervakning, striktare Kubernetes-säkerhetsinställningar och tydligare hantering av konfigurationsdrift mellan YAML-manifest och den körande miljön.
