@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: churn-api
-          image: churn-api:f73755ce66a58686d0cd8e8c05c5313b3c8fe43b
+          image: ghcr.io/kevinbrunomlops/miniproject-mobil-churn-lab:a37394cb8a0aaea7b51bde6b53eaf607aa589e2f
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
