@@ -28,6 +28,7 @@ README.md
 # Old model files
 models/
 
-# Updata thet not supose to be included in the images
+# Exclude generated outputs except approved model artifacts
 outputs/*
 !outputs/modell.joblib
+!outputs/matvarden.json
