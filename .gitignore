@@ -1,6 +1,6 @@
 # Det träningen skriver
 outputs/
-
+mlruns/
 # Python
 __pycache__/
 *.py[cod]
