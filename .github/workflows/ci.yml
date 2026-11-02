@@ -270,7 +270,6 @@ jobs:
         run: |
           IMAGE="ghcr.io/${REPOSITORY,,}:$COMMIT_SHA"
 
-          docker image rm "$IMAGE"
           docker pull "$IMAGE"
           bash scripts/smoke_test.sh "$IMAGE"
 
