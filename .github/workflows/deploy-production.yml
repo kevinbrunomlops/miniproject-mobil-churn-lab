@@ -33,14 +33,14 @@ jobs:
             echo "ERROR: A full 40-character commit SHA is required."
             exit 1
           fi
-
+      
       - name: Verify approved CI run
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_SHA: ${{ inputs.image_sha }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          RUNS=$(gh api \
+          RUNS=$(gh api --method GET \
             "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
             -f head_sha="$IMAGE_SHA" \
             -f event="push" \
@@ -53,6 +53,7 @@ jobs:
           fi
 
           echo "PASS: Approved CI run found."
+
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
