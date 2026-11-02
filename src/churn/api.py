@@ -97,8 +97,9 @@ def health():
     return {
         "status": "ok",
         "model_version": app.state.metadata.get(
-            "commit", "unkknown"
+            "commit", "unkknown",
         ),
+        "api_version": "2.0",
     }
 
 
