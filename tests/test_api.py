@@ -1,12 +1,41 @@
 """Tests for the churn prediction API."""
-
 import pytest 
+import numpy as np
+
+from contextlib import asynccontextmanager
+from unittest.mock import Mock
 from fastapi.testclient import TestClient
 
 from churn.api import app
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    """Run API test without requiring a trained model artifact."""
+
+    mock_model = Mock()
+    mock_model.predict_proba.return_value = np.array([[0.25, 0.75]])
+
+    mock_metadata = {
+        "commit": "test_sha",
+        "roc_auc": 0.80,
+        "data_sha256": "test_data_hash",
+    }
+
+    # Prevent the real lifespan from loading local model files.
+    @asynccontextmanager
+    async def mock_lifespan(app):
+        app.state.model = mock_model
+        app.state.metadata = mock_metadata
+        yield
+        app.state.model = None
+        app.state.metadata = None
+
+    monkeypatch.setattr(
+        app.router,
+        "lifespan_context",
+        mock_lifespan,
+    )
+
     with TestClient(app) as test_client:
         yield test_client
 
